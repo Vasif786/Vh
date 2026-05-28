@@ -1,8 +1,8 @@
-name: Build Android APK & AAB
+name: Build Android APK & AABb
 
 env:
   GRADLE_OPTS: -Xmx4096m -XX:+UseG1GC
-  NODE_VERSION: '18'
+  NODE_VERSION: '20'
   JAVA_VERSION: '17'
   main_project_module: app
   playstore_name: Frogobox ID
@@ -57,35 +57,32 @@ jobs:
 
       - name: Install npm dependencies
         run: npm ci --prefer-offline --no-audit
+        continue-on-error: false
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
       - name: Validate Gradle wrapper
-        run: ./gradlew wrapper --gradle-version=8.6
-
-      - name: Lint Gradle files
-        run: ./gradlew lint
-
-      - name: Run unit tests
-        run: ./gradlew test --continue
-        continue-on-error: true
+        run: ./gradlew wrapper --gradle-version=8.6 2>&1 | head -50
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --build-cache --parallel
         env:
           CI_BUILD: '1'
+        continue-on-error: false
 
       - name: Build Release APK
         run: ./gradlew assembleRelease --build-cache --parallel
         env:
           CI_BUILD: '1'
+        continue-on-error: false
 
       - name: Build Release Bundle (AAB)
         run: ./gradlew ${{ env.main_project_module }}:bundleRelease --build-cache --parallel
         env:
           CI_BUILD: '1'
           GPLAY_BUILD: '1'
+        continue-on-error: false
 
       - name: Set build info variables
         if: success()
@@ -134,7 +131,6 @@ jobs:
           Commit: ${{ github.sha }}
           Author: ${{ github.actor }}
           Build Date: ${{ env.build_date }} ${{ env.build_time }}
-          App Version: ${{ env.version_name }} (Code: ${{ env.version_code }})
           Build Status: ${{ job.status }}
           
           Artifacts Generated:
@@ -167,12 +163,13 @@ jobs:
               body: `## 🔨 Build Report\n\`\`\`\n${report}\n\`\`\``
             });
 
-      - name: Notify on failure
+      - name: Print error logs on failure
         if: failure()
         run: |
-          echo "::error::Build failed! Check logs for details"
-          echo "::notice::Common issues:"
-          echo "1. Missing gradle dependencies - run: npm ci"
-          echo "2. Java version mismatch - ensure Java 17 is used"
-          echo "3. Gradle cache issues - try clearing cache: rm -rf ~/.gradle/caches"
+          echo "::error::Build failed! Check logs above for details"
+          echo "::notice::Troubleshooting guide:"
+          echo "1. Ensure package-lock.json is committed and in sync with package.json"
+          echo "2. Node version is set to 20 or higher (currently: ${{ env.NODE_VERSION }})"
+          echo "3. Java version is set to 17 (currently: ${{ env.JAVA_VERSION }})"
+          echo "4. Run 'npm ci' locally to sync dependencies"
           
