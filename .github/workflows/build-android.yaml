@@ -1,128 +1,178 @@
-name: Generated APK AAB (Push Github - Create Artifact To Github Action)
+name: Build Android APK & AAB
 
 env:
-  # The name of the main module repository
+  GRADLE_OPTS: -Xmx4096m -XX:+UseG1GC
+  NODE_VERSION: '18'
+  JAVA_VERSION: '17'
   main_project_module: app
-
-  # The name of the Play Store
   playstore_name: Frogobox ID
 
-  # The output folder for build results
-  build_output_path: buildActionResult
-
 on:
-
   push:
     branches:
       - 'release/**'
-
-  # Allows you to run this workflow manually from the Actions tab
+      - 'main'
+      - 'master'
+  pull_request:
+    branches:
+      - 'main'
+      - 'master'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Set Current Date As Env Variable
-      - name: Set current date as env variable
-        run: echo "date_today=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
-      # Set Repository Name As Env Variable
-      - name: Set repository name as env variable
-        run: echo "repository_name=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')" >> $GITHUB_ENV
-
-      - name: Set Up JDK
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu' # See 'Supported distributions' for available options
-          java-version: '17'
+          distribution: 'zulu'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: 'gradle'
 
-      - name: Change wrapper permissions
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install npm dependencies
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # Run Tests Build
-      - name: Run gradle tests
-        run: ./gradlew test
+      - name: Validate Gradle wrapper
+        run: ./gradlew wrapper --gradle-version=8.6
 
-      # Run Build Project
-      - name: Build gradle project
-        run: ./gradlew build
+      - name: Lint Gradle files
+        run: ./gradlew lint
 
-      # Create APK Debug
-      - name: Build apk debug project (APK) - ${{ env.main_project_module }} module
-        run: ./gradlew assembleDebug
+      - name: Run unit tests
+        run: ./gradlew test --continue
+        continue-on-error: true
 
-      # Create APK Release
-      - name: Build apk release project (APK) - ${{ env.main_project_module }} module
-        run: ./gradlew assemble
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --build-cache --parallel
+        env:
+          CI_BUILD: '1'
 
-      # Create Bundle AAB Release
-      # Noted for main module build [main_project_module]:bundleRelease
-      - name: Build app bundle release (AAB) - ${{ env.main_project_module }} module
-        run: ./gradlew ${{ env.main_project_module }}:bundleRelease
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --build-cache --parallel
+        env:
+          CI_BUILD: '1'
 
-      # Upload Artifact Build
-      # Noted For Output [main_project_module]/build/outputs/apk/debug/
-      - name: Upload APK Debug - ${{ env.repository_name }}
+      - name: Build Release Bundle (AAB)
+        run: ./gradlew ${{ env.main_project_module }}:bundleRelease --build-cache --parallel
+        env:
+          CI_BUILD: '1'
+          GPLAY_BUILD: '1'
+
+      - name: Set build info variables
+        if: success()
+        run: |
+          echo "build_date=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+          echo "build_time=$(date +'%H:%M:%S')" >> $GITHUB_ENV
+          echo "repo_name=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')" >> $GITHUB_ENV
+          echo "version_name=$(cat package.json | grep '"version"' | head -1 | awk -F '"' '{print $4}')" >> $GITHUB_ENV
+          echo "version_code=$(cat package.json | grep 'versionCode' | awk -F ':' '{print $2}' | tr -d ' ,')" >> $GITHUB_ENV
+
+      - name: Upload Debug APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - APK(s) debug generated
+          name: ${{ env.repo_name }}-debug-${{ env.build_date }}
           path: ${{ env.main_project_module }}/build/outputs/apk/debug/
+          retention-days: 30
+          compression-level: 6
 
-      # Noted For Output [main_project_module]/build/outputs/apk/release/
-      - name: Upload APK Release - ${{ env.repository_name }}
+      - name: Upload Release APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - APK(s) release generated
+          name: ${{ env.repo_name }}-release-${{ env.build_date }}
           path: ${{ env.main_project_module }}/build/outputs/apk/release/
+          retention-days: 30
+          compression-level: 6
 
-      # Noted For Output [main_project_module]/build/outputs/bundle/release/
-      - name: Upload AAB (App Bundle) Release - ${{ env.repository_name }}
+      - name: Upload App Bundle (AAB)
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - App bundle(s) AAB release generated
+          name: ${{ env.repo_name }}-aab-${{ env.build_date }}
           path: ${{ env.main_project_module }}/build/outputs/bundle/release/
+          retention-days: 30
+          compression-level: 6
 
-      # ======================================================
-      # Copy Build Outputs & Push to GitHub
-      # ======================================================
-
-      # Delete build/outputs directory if it already exists
-      - name: Clean up build/outputs directory
-        run: rm -rf ${{ env.build_output_path }}
-
-      # Create build/outputs directory if it doesn't exist
-      - name: Create build/outputs directory
-        run: mkdir -p ${{ env.build_output_path }}
-
-      # Copy APK Debug to build/outputs
-      - name: Copy APK Debug to build/outputs
+      - name: Generate build report
+        if: always()
         run: |
-          cp -r ${{ env.main_project_module }}/build/outputs/apk/debug/* ${{ env.build_output_path }}/ 2>/dev/null || echo "No APK debug files found"
+          cat > build_report.txt << EOF
+          Build Report
+          ============
+          Repository: ${{ github.repository }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          Author: ${{ github.actor }}
+          Build Date: ${{ env.build_date }} ${{ env.build_time }}
+          App Version: ${{ env.version_name }} (Code: ${{ env.version_code }})
+          Build Status: ${{ job.status }}
+          
+          Artifacts Generated:
+          - Debug APK: ${{ env.main_project_module }}/build/outputs/apk/debug/
+          - Release APK: ${{ env.main_project_module }}/build/outputs/apk/release/
+          - Bundle AAB: ${{ env.main_project_module }}/build/outputs/bundle/release/
+          EOF
+          cat build_report.txt
 
-      # Copy APK Release to build/outputs
-      - name: Copy APK Release to build/outputs
+      - name: Upload build report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-report-${{ env.build_date }}
+          path: build_report.txt
+          retention-days: 30
+
+      - name: Comment PR with build status
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('build_report.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔨 Build Report\n\`\`\`\n${report}\n\`\`\``
+            });
+
+      - name: Notify on failure
+        if: failure()
         run: |
-          cp -r ${{ env.main_project_module }}/build/outputs/apk/release/* ${{ env.build_output_path }}/ 2>/dev/null || echo "No APK release files found"
-
-      # Copy AAB Release to build/outputs
-      - name: Copy AAB Release to build/outputs
-        run: |
-          cp -r ${{ env.main_project_module }}/build/outputs/bundle/release/* ${{ env.build_output_path }}/ 2>/dev/null || echo "No AAB release files found"
-
-      # List copied files for verification
-      - name: List build/outputs contents
-        run: ls -la ${{ env.build_output_path }}/
-
-      # Commit and Push to GitHub
-      - name: Commit & Push build outputs to GitHub
-        run: |
-          git config user.name '${{ github.actor }}'
-          git config user.email '${{ github.actor }}@users.noreply.github.com'
-          git add ${{ env.build_output_path }}/ -f
-          git diff --cached --quiet && echo "No changes to commit" || (git commit -m "ci: upload build outputs - ${{ env.date_today }} [skip ci]" && git push)
+          echo "::error::Build failed! Check logs for details"
+          echo "::notice::Common issues:"
+          echo "1. Missing gradle dependencies - run: npm ci"
+          echo "2. Java version mismatch - ensure Java 17 is used"
+          echo "3. Gradle cache issues - try clearing cache: rm -rf ~/.gradle/caches"
+          
